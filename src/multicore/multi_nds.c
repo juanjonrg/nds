@@ -1,4 +1,10 @@
+#ifdef MATLAB_MEX_FILE
+#include "mex.h"
+#else
 #define _GNU_SOURCE
+#include "utils.h"
+#endif
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -7,8 +13,6 @@
 #include <stdint.h>
 #include <stdbool.h>
 #include <unistd.h>
-
-#include "utils.h"
 
 #define BUFSIZE 100
 #define checkPth(rc) __checkPth(rc, __FILE__, __LINE__)
@@ -19,7 +23,7 @@ static inline void __checkPth(int rc, const char *file, const int line) {
     }
 }
 
-int n, m;
+int n, m, verbosity;
 float *population;
 int *sorted_pop;
 int ***all_fronts;
@@ -163,12 +167,10 @@ void *threaded_nds(void *thread_id) {
     return NULL;
 }
 
-void nds(int verbosity) {
-
+void nds() {
     sorted_pop = malloc(n*m*sizeof(int));
     all_fronts = malloc(m*sizeof(int **));
     all_front_counts = malloc(m*sizeof(int *));
-    ranks = malloc(n*sizeof(int));
 
     for (int i = 0; i < n; i++) {
         ranks[i] = -1;
@@ -210,13 +212,61 @@ void nds(int verbosity) {
     free(sorted_pop);
     free(all_fronts);
     free(all_front_counts);
-    free(ranks);
 }
 
-int main(int argc, char **argv) {
-    int verbosity = 1;
+void show_info(char *filename) {
+    printf("Parameters for this run:\n");
+    printf("    Population size:      %d\n", n);
+    printf("    Number of objectives: %d\n", m);
+    if (filename != NULL) {
+        printf("    Population data file: %s\n", filename);
+    }
+    printf("    Verbosity:            %d\n\n", verbosity);
+}
 
+#ifdef MATLAB_MEX_FILE
+void mexFunction(int nlhs, mxArray *plhs[],
+                 int nrhs, const mxArray *prhs[]) {
+    
     printf("MC-BOS: Multicore implementation of the Best Order Sort algorithm\n\n");
+    verbosity = 1;
+    if (nrhs < 1) {
+        mexErrMsgIdAndTxt("nds:nrhs", "Required input: Population matrix.");
+    } 
+    if (nlhs != 1) {
+        mexErrMsgIdAndTxt("nds:nrhs", "Required output: Ranks array.");
+    }
+    if (!mxIsSingle(prhs[0]) || mxIsComplex(prhs[0])) {
+        mexErrMsgIdAndTxt("nds:population", "Input population must be a single precision matrix.");
+    }
+    if (nrhs > 1) {
+        if (!mxIsScalar(prhs[1])) {
+            mexErrMsgIdAndTxt("nds:verbosity", "Verbosity must be a scalar.");
+        }
+        verbosity = mxGetScalar(prhs[1]);
+        if (verbosity < 0 || verbosity > 2) {
+            mexErrMsgIdAndTxt("nds:verbosity_level", "Verbosity must be 0, 1 or 2.");
+        }
+    }
+    
+    n = mxGetN(prhs[0]);
+    m = mxGetM(prhs[0]);
+    population = mxGetPr(prhs[0]);
+    show_info(NULL);
+
+    double start_time = get_time();
+    plhs[0] = mxCreateNumericMatrix(1, (mwSize)n, mxINT32_CLASS, mxREAL);
+    ranks = mxGetPr(plhs[0]);
+    nds();
+    double end_time = get_time();
+    if (verbosity == 0) {
+        printf("Elapsed time: %.9f ms.\n", end_time - start_time);
+    }
+}
+#else
+int main(int argc, char **argv) {
+    printf("MC-BOS: Multicore implementation of the Best Order Sort algorithm\n\n");
+    verbosity = 1;
 
     int c, error;
     while ((c = getopt(argc, argv, "hv:")) != -1) {
@@ -282,20 +332,19 @@ int main(int argc, char **argv) {
         }
     }
     fclose(f);
-
-    printf("Parameters for this run:\n");
-    printf("    Population size:      %d\n", n);
-    printf("    Number of objectives: %d\n", m);
-    printf("    Population data file: %s\n", filename);
-    printf("    Verbosity:            %d\n\n", verbosity);
+    
+    show_info(filename);
 
     double start_time = get_time();
-    nds(verbosity);
+    ranks = malloc(n*sizeof(int));
+    nds();
+    free(ranks);
     double end_time = get_time();
     if (verbosity == 0) {
         printf("Elapsed time: %.9f ms.\n", end_time - start_time);
     }
-
+    
     free(population);
 	exit(EXIT_SUCCESS);
 }
+#endif

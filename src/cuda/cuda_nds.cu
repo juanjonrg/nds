@@ -4,10 +4,15 @@
 #include <time.h>
 #include <unistd.h>
 
-#include <cub/cub.cuh>
 extern "C" {
+#ifdef MATLAB_MEX_FILE
+    #include "mex.h"
+#else
     #include "utils.h"
+#endif
 }
+
+#include <cub/cub.cuh>
 
 #define BUFSIZE 100
 #define checkCuda(result) __checkCuda(result, __FILE__, __LINE__)
@@ -220,7 +225,7 @@ __global__ void domination_check(int n, int m, const float *tr_pop,
     }
 }
 
-void nds(int n, int m, float *h_pop, int verbosity) {
+void nds(int n, int m, float *h_pop, int verbosity, int *h_ranks) {
     int count = n*m;
 
     // Transpose population matrix
@@ -323,7 +328,6 @@ void nds(int n, int m, float *h_pop, int verbosity) {
             dim3 block(BLOCK_1D);
             dim3 grid(min(n, 65535));
             init_int_array_limited<<<grid, block>>>(-1, n*BLOCK_1D, d_dominating_idx);
-            int *h_ranks = (int *) malloc(n*sizeof(int));
 
             int num_sorted = 0;
             int rank = 0;
@@ -355,7 +359,6 @@ void nds(int n, int m, float *h_pop, int verbosity) {
                 rank++;
                 num_sorted += front_count;
             }
-            free(h_ranks);
         }
         checkCuda(cudaFree(d_dominating_idx));
         checkCuda(cudaFree(d_last_batch));
@@ -368,13 +371,63 @@ void nds(int n, int m, float *h_pop, int verbosity) {
     checkCuda(cudaFree(d_best_m));
 }
 
+void show_info(int n, int m, char *filename, int verbosity) {
+    printf("Parameters for this run:\n");
+    printf("    Population size:      %d\n", n);
+    printf("    Number of objectives: %d\n", m);
+    if (filename != NULL) {
+        printf("    Population data file: %s\n", filename);
+    }
+    printf("    Verbosity:            %d\n\n", verbosity);
+}
+
+#ifdef MATLAB_MEX_FILE
+void mexFunction(int nlhs, mxArray *plhs[],
+                 int nrhs, const mxArray *prhs[]) {
+    cudaFree(0); // Trick to initalize CUDA context
+    
+    printf("GPU-BOS: CUDA implementation of the Best Order Sort algorithm\n\n");
+    int verbosity = 1;
+    if (nrhs < 1) {
+        mexErrMsgIdAndTxt("nds:nrhs", "Required input: Population matrix.");
+    } 
+    if (nlhs != 1) {
+        mexErrMsgIdAndTxt("nds:nrhs", "Required output: Ranks array.");
+    }
+    if (!mxIsSingle(prhs[0]) || mxIsComplex(prhs[0])) {
+        mexErrMsgIdAndTxt("nds:population", "Input population must be a single precision matrix.");
+    }
+    if (nrhs > 1) {
+        if (!mxIsScalar(prhs[1])) {
+            mexErrMsgIdAndTxt("nds:verbosity", "Verbosity must be a scalar.");
+        }
+        verbosity = mxGetScalar(prhs[1]);
+        if (verbosity < 0 || verbosity > 2) {
+            mexErrMsgIdAndTxt("nds:verbosity_level", "Verbosity must be 0, 1 or 2.");
+        }
+    }
+    
+    int n = mxGetN(prhs[0]);
+    int m = mxGetM(prhs[0]);
+    float *population = (float *) mxGetPr(prhs[0]);
+    show_info(n, m, NULL, verbosity);
+
+    double start_time = get_time();
+    plhs[0] = mxCreateNumericMatrix(1, (mwSize)n, mxINT32_CLASS, mxREAL);
+    int *ranks = (int *) mxGetPr(plhs[0]);
+    nds(n, m, population, verbosity, ranks);
+    double end_time = get_time();
+    if (verbosity == 0) {
+        printf("Elapsed time: %.9f ms.\n", end_time - start_time);
+    }
+}
+#else
 int main(int argc, char **argv) {
     cudaSetDeviceFlags(cudaDeviceMapHost);
     cudaFree(0); // Trick to initalize CUDA context
 
-    int verbosity = 1;
-
     printf("GPU-BOS: CUDA implementation of the Best Order Sort algorithm\n\n");
+    int verbosity = 1;
 
     int c, error;
     while ((c = getopt(argc, argv, "hv:")) != -1) {
@@ -442,14 +495,12 @@ int main(int argc, char **argv) {
     }
     fclose(f);
 
-    printf("Parameters for this run:\n");
-    printf("    Population size:      %d\n", n);
-    printf("    Number of objectives: %d\n", m);
-    printf("    Population data file: %s\n", filename);
-    printf("    Verbosity:            %d\n\n", verbosity);
+    show_info(n, m, filename, verbosity);
 
     double start_time = get_time();
-    nds(n, m, h_pop, verbosity);
+    int *h_ranks = (int *) malloc(n*sizeof(int));
+    nds(n, m, h_pop, verbosity, h_ranks);
+    free(h_ranks);
     double end_time = get_time();
     if (verbosity == 0) {
         printf("Elapsed time: %.9f ms.\n", end_time - start_time);
@@ -458,3 +509,4 @@ int main(int argc, char **argv) {
     free(h_pop);
 	exit(EXIT_SUCCESS);
 }
+#endif
